@@ -46,6 +46,7 @@ export const DEFAULT_SETTINGS = {
     linesEnabled : true, // master switch: false disables line generation/advance and latent injection; inline display is independently controlled
     linesInterval: 2,
     linesMode: 'turns',  // 'turns' | 'days' | 'manual'
+    linesReadPoints: true, // 线生成时读当前聊天全部点作为参考
     linesInject: false,  // 潜伏注入：活跃线隐形注入主楼 AI（IN_CHAT/SYSTEM）；默认关（改 AI 行为+token 成本，opt-in）
     dashedEnabled: false, // 冷知识自动生成/楼层展示：跟线多生成两条；历史与面板手动生成不受此开关删除或阻断
     dashedCleanupEnabled: true, // 冷知识历史自动清理：只限制未锁条目，锁定项不计入数量

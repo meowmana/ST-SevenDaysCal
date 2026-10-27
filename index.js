@@ -208,6 +208,7 @@ import { createLinesFeature, linesGenerationFailureText } from './business/lines
 import { syncVectorGlyphTheme } from './business/lines/vectors/glyph.js';
 import { createOutlineFeature } from './business/outline/feature.js';
 import { normalizeSpaceHistory } from './business/space/schema.js';
+import { numberedSpacePointGroups } from './business/space/context.js';
 import { createSpaceFeature } from './business/space/feature.js';
 import { getSpaceChatPlaceholder } from './business/space/prompts.js';
 import { pointRawToken } from './business/space/schema.js';
@@ -1833,11 +1834,12 @@ const linesFeature = createLinesFeature({
             const snapshot = captureGenerationContext(ctx);
             // Capture the active outline with the line task's other input, before message-building awaits.
             snapshot.outlinePlan = outlineFeature.readPlanningText();
+            snapshot.pointPlan = buildLinesPointPlan(ctx);
             return snapshot;
         },
         buildPrompt: (previousRaw, travelContext, vectorContext, identity) => appendTravelPromptContext(buildLinesPrompt(identity?.userName || '用户', identity?.charName || '角色', 'user', previousRaw, getScale(identity?.characterKey || charStableKey(getContext())), vectorContext, getAdultMode(identity?.characterKey || charStableKey(getContext())), getLineDirection(identity?.characterKey || charStableKey(getContext())), getNarrativePace()), travelContext),
         random: () => Math.random(),
-        callApi: (prompt, signal, options, identity, contextSnapshot) => callCustomApi(contextSnapshot || getContext(), prompt, loadCfg(), identity?.userName || '用户', identity?.charName || '角色', signal, options?.historyLimit ?? 3, { ...options, includeOutlinePlan: true, includeCurrentStoryTime: true }),
+        callApi: (prompt, signal, options, identity, contextSnapshot) => callCustomApi(contextSnapshot || getContext(), prompt, loadCfg(), identity?.userName || '用户', identity?.charName || '角色', signal, options?.historyLimit ?? 3, { ...options, includeOutlinePlan: true, includePointPlan: true, includeCurrentStoryTime: true }),
         missingApi: ({ silent }) => { if (!silent && !settingsOpen) toggleSettings(); },
         memoryFailure: error => { if (linesMode) linesFeature.renderBody(linesMemoryPreflightErrorHtml(diagnosticMessage(error))); },
         onStart: () => {},
@@ -3761,6 +3763,11 @@ function injectModal() {
                                                 <label class="sp-mode-opt"><input type="checkbox" id="sp-lines-inject" ${getSettings().linesInject === true ? 'checked' : ''}><span>潜伏注入主楼 AI</span></label>
                                                 <p class="sp-cfg-hint">活跃线隐形注入主楼 AI（聊天不显示），让伏笔作为暗流自然呈现。会改 AI 行为、略增 token，默认关。</p>
                                             </div>
+                                            <div class="sp-settings-subsection-static"><div class="sp-settings-subsection-title">线 · 读点</div>
+                                                <label class="sp-mode-opt"><input type="checkbox" id="sp-lines-read-points" ${getSettings().linesReadPoints !== false ? 'checked' : ''}><span>线生成时读点</span></label>
+                                                <p class="sp-cfg-hint">生成线时，把当前聊天「点」里排好的全部日程一起交给线的 AI，让点里发生的事能推着线走。不读面也能用。略增 token，默认开。</p>
+                                                <details class="sp-lines-read-points-preview"><summary>看看线会读到什么</summary><pre class="sp-cfg-hint" id="sp-lines-read-points-text" style="white-space:pre-wrap;word-break:break-word;max-height:40vh;overflow-y:auto;"></pre></details>
+                                            </div>
                                             <div class="sp-settings-subsection-static"><div class="sp-settings-subsection-title">面 · 大纲注入</div>
                                                 <label class="sp-mode-opt"><input type="checkbox" id="sp-outline-inject" ${getSettings().outlineInject === true ? 'checked' : ''}><span>大纲自动注入</span></label>
                                                 <p class="sp-cfg-hint">沿大纲节点提供走向参考：每隔若干楼<b>独立判定</b>当前演到哪个节点，把「当前节点 + 下一步方向」隐形注入主楼 AI（聊天不显示）。游标<b>只进不退、无信号不动</b>，写再多跑题日常也不硬推。默认关，需先有一版面。</p>
@@ -4653,6 +4660,15 @@ function injectModal() {
         if (getSettings().dashedCleanupEnabled !== false && pluginEnabled()) linesFeature.dashed.cleanup(true);
     });
     // 大纲自动注入（面）开关：on → 按当前大纲+游标立即注入；off → 清空扩展 prompt（游标留 chat_metadata，再开即续）
+    $in('#sp-lines-read-points').on('change', function () {
+        getSettings().linesReadPoints = this.checked;
+        saveSettingsDebounced();
+    });
+    $in('.sp-lines-read-points-preview').on('toggle', function () {
+        if (!this.open) return;
+        const text = buildLinesPointPlan(getContext());
+        $in('#sp-lines-read-points-text').text(text || (getSettings().linesReadPoints === false ? '（开关关着，线现在不读点）' : '（当前聊天还没有排好的点）'));
+    });
     $in('#sp-outline-inject').on('change', function () {
         getSettings().outlineInject = this.checked;
         saveSettingsDebounced();
@@ -7047,6 +7063,13 @@ function outlineWorldInfoTriggerText(history) {
 
 // historyLimit：喂给这次调用的「最近可见 AI 楼」条数上限。默认 3。
 // 传 0 = 完全不喂近景，只靠 system 块（人设/卡描述/世界书/记忆库）。
+function buildLinesPointPlan(ctx) {
+    if (getSettings().linesReadPoints === false) return '';
+    const groups = numberedSpacePointGroups(store.listScheduleScopes(), numberedPointList, ctx?.name1 || '用户');
+    if (!groups) return '';
+    return `【已排日程（点）】以下是本聊天「点」里已排好的日程事件，是故事中已经发生或即将发生的事。推演线时把它们当作既成或既定的剧情：线可以从这些事件里长出进展、诱因、后果或伏笔，不得与之矛盾，也不要把日程原样复述成线。\n${groups}`;
+}
+
 async function buildMessages(ctx, prompt, userName, charName, historyLimit = 3, opts = {}) {
     const throwIfAborted = () => { if (opts.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError'); };
     const reportPhase = phase => { if (!opts.signal?.aborted) { try { opts.onGenerationPhase?.(phase); } catch {} } };
@@ -7142,6 +7165,7 @@ async function buildMessages(ctx, prompt, userName, charName, historyLimit = 3, 
         : '';
 
     const outlinePlan = opts.includeOutlinePlan ? String(ctx.outlinePlan || '') : '';
+    const pointPlan = opts.includePointPlan ? String(ctx.pointPlan || '') : '';
 
     const sys  = [
         `你是一位旁观者和叙事分析助手，负责以第三人称视角分析 ${userName} 与 ${charName} 的故事。`,
@@ -7157,6 +7181,7 @@ async function buildMessages(ctx, prompt, userName, charName, historyLimit = 3, 
         almanacBlock,
         calDescBlock,
         outlinePlan,
+        pointPlan,
     ].filter(Boolean).join('\n\n');
     // historyLimit=0 → 完全不喂历史（history 为空），只留 system + prompt。
     return [{ role: 'system', content: sys }, ...history, { role: 'user', content: prompt }];
