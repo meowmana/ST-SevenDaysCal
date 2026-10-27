@@ -209,6 +209,7 @@ import { syncVectorGlyphTheme } from './business/lines/vectors/glyph.js';
 import { createOutlineFeature } from './business/outline/feature.js';
 import { normalizeSpaceHistory } from './business/space/schema.js';
 import { numberedSpacePointGroups } from './business/space/context.js';
+import { POINT_INJECT_KEY, POINT_INJECT_DEPTH, buildPointInjection } from './business/point/injection.js';
 import { createSpaceFeature } from './business/space/feature.js';
 import { getSpaceChatPlaceholder } from './business/space/prompts.js';
 import { pointRawToken } from './business/space/schema.js';
@@ -2493,6 +2494,7 @@ jQuery(async () => {
     if (_stListeners.genStart) eventSource.removeListener?.(event_types.GENERATION_STARTED, _stListeners.genStart);
     _stListeners.genStart = (genType, _opts, dryRun) => {
         refreshStoryClockInjection();
+        refreshPointInjection();
         linesFeature.onGenerationStarted({ genType, dryRun });
     };
     eventSource.on(event_types.GENERATION_STARTED, _stListeners.genStart);
@@ -2778,6 +2780,7 @@ function applyPluginEnabled(on, { characterExcluded = false } = {}) {
         try { _clearAllInlineBoxes(); } catch {}
         _abortAllBackground({ abortStorageMigration: characterExcluded });
         try { ctx.setExtensionPrompt?.(LINES_INJECT_KEY, ''); } catch {}
+        try { ctx.setExtensionPrompt?.(POINT_INJECT_KEY, ''); } catch {}
         try { outlineFeature.injection.clear(); } catch {}
         try { ledgerInjectionController.clear(); } catch {}
     }
@@ -2827,11 +2830,12 @@ function refreshChatStorageViews({ renderBody = true } = {}) {
     renderDailyMenuCard();
     if (renderBody) setBody(pointState.cachedSchedule || pointScheduleEmptyHtml());
     outlineFeature.injection.refresh();
-    refreshLinesInjection(); refreshStoryClockInjection(); refreshLedgerInjection();
+    refreshLinesInjection(); refreshPointInjection(); refreshStoryClockInjection(); refreshLedgerInjection();
     spaceFeature.refreshFromStore('space-chat');
 }
 // Back-fill：切聊天/初始化/主开关切换时的入口。渲染交给窗口控制器；保留潜伏注入 refresh 真副作用。
 async function backfillLinesInlineBlocks() {
+    refreshPointInjection();
     refreshLinesInjection();   // chat 切换/初始化/主开关切换 → 重设潜伏注入（关闭时内部会清空）
     refreshStoryClockInjection();   // 时间戳：首屏/切 chat/主开关一并重设常驻注入
     refreshLedgerInjection();       // 暗历注入：首屏/切 chat/主开关一并重设（关/空时内部自清）
@@ -2909,6 +2913,17 @@ const LINES_INJECT_KEY   = 'sp_lines_latent';
 // 重设潜伏注入。读当前视角活跃线；关闭或无活跃线时清空。幂等，可随处多调。
 function refreshLinesInjection() {
     return linesFeature.injection?.refresh?.();
+}
+function refreshPointInjection() {
+    const ctx = getContext();
+    if (!ctx || typeof ctx.setExtensionPrompt !== 'function') return false;
+    const text = injectEnabled() && getSettings().pointInject !== false
+        ? buildPointInjection(store.listScheduleScopes(), ctx.name1 || '用户', cleanText)
+        : '';
+    if (!text) { ctx.setExtensionPrompt(POINT_INJECT_KEY, ''); return true; }
+    const { promptTypes = {}, promptRoles = {} } = ctx.constants || {};
+    ctx.setExtensionPrompt(POINT_INJECT_KEY, text, promptTypes.IN_CHAT ?? 1, POINT_INJECT_DEPTH, false, promptRoles.SYSTEM ?? 0);
+    return true;
 }
 
 // 历·自动确认日期的判定状态（抄 outline 那套三闸：防重入 + 单调 msgId + 攒够计数）。仅 API 兜底路用；戳优先路每楼直读不占这些。
@@ -3767,6 +3782,11 @@ function injectModal() {
                                                 <label class="sp-mode-opt"><input type="checkbox" id="sp-lines-read-points" ${getSettings().linesReadPoints !== false ? 'checked' : ''}><span>线生成时读点</span></label>
                                                 <p class="sp-cfg-hint">生成线时，把当前聊天「点」里排好的全部日程一起交给线的 AI，让点里发生的事能推着线走。不读面也能用。略增 token，默认开。</p>
                                                 <details class="sp-lines-read-points-preview"><summary>看看线会读到什么</summary><pre class="sp-cfg-hint" id="sp-lines-read-points-text" style="white-space:pre-wrap;word-break:break-word;max-height:40vh;overflow-y:auto;"></pre></details>
+                                            </div>
+                                            <div class="sp-settings-subsection-static"><div class="sp-settings-subsection-title">点 · 潜伏注入主楼</div>
+                                                <label class="sp-mode-opt"><input type="checkbox" id="sp-point-inject" ${getSettings().pointInject !== false ? 'checked' : ''}><span>点潜伏注入主楼 AI</span></label>
+                                                <p class="sp-cfg-hint">把「点」里排好的日程隐形交给主楼 AI（聊天不显示），让它挑合适的结合线推进剧情，不照搬、不复述。略增 token，默认开。</p>
+                                                <details class="sp-point-inject-preview"><summary>看看主楼 AI 会读到什么</summary><pre class="sp-cfg-hint" id="sp-point-inject-text" style="white-space:pre-wrap;word-break:break-word;max-height:40vh;overflow-y:auto;"></pre></details>
                                             </div>
                                             <div class="sp-settings-subsection-static"><div class="sp-settings-subsection-title">面 · 大纲注入</div>
                                                 <label class="sp-mode-opt"><input type="checkbox" id="sp-outline-inject" ${getSettings().outlineInject === true ? 'checked' : ''}><span>大纲自动注入</span></label>
@@ -4668,6 +4688,16 @@ function injectModal() {
         if (!this.open) return;
         const text = buildLinesPointPlan(getContext());
         $in('#sp-lines-read-points-text').text(text || (getSettings().linesReadPoints === false ? '（开关关着，线现在不读点）' : '（当前聊天还没有排好的点）'));
+    });
+    $in('#sp-point-inject').on('change', function () {
+        getSettings().pointInject = this.checked;
+        saveSettingsDebounced();
+        refreshPointInjection();
+    });
+    $in('.sp-point-inject-preview').on('toggle', function () {
+        if (!this.open) return;
+        const text = getSettings().pointInject === false ? '' : buildPointInjection(store.listScheduleScopes(), getContext()?.name1 || '用户', cleanText);
+        $in('#sp-point-inject-text').text(text || (getSettings().pointInject === false ? '（开关关着，点现在不进正文）' : '（当前聊天还没有排好的点）'));
     });
     $in('#sp-outline-inject').on('change', function () {
         getSettings().outlineInject = this.checked;
